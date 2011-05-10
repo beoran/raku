@@ -8,6 +8,9 @@ set(CMAKE_C_FLAGS "-g -O")
 
 include_directories(include)
 add_subdirectory(src build)
+add_subdirectory(test test) 
+file(GLOB TESTS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} test/test_*.c)
+message(STATUS ${TESTS})
 
 # For testing
 # set(TEST_LIBS ${LIBS} rtcutl m)
