@@ -1,6 +1,8 @@
 // Copyright (c) 2004-2012 Sergey Lyubka <valenok@gmail.com>
 // All rights reserved
 //
+// Modifications and enhancements by <beoran@gmail.com>, 2013.
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
@@ -42,14 +44,9 @@ struct slre {
   int num_caps;   // Number of bracket pairs
   int anchored;   // Must match from string start
   enum slre_option options;
-  const char *error_string;   // Error string
+  int error;      // Error code
 };
 
-// Captured substring
-struct cap {
-  const char *ptr;  // Pointer to the substring
-  int len;          // Substring length
-};
 
 /* BDM: extended to support more isXXX functionality. */
 
@@ -74,7 +71,7 @@ enum {
 //
 // OPEN capture_number
 // CLOSE capture_number
-//  If the user have passed 'struct cap' array for captures, OPEN
+//  If the user have passed 'struct slre_captured' array for captures, OPEN
 //  records the beginning of the matched substring (cap->ptr), CLOSE
 //  sets the length (cap->len) for respective capture_number.
 //
@@ -88,13 +85,60 @@ enum {
 //
 // STARQ, PLUSQ are non-greedy versions of STAR and PLUS.
 
-static const char *meta_characters = "|.^$*+?()[\\";
-static const char *error_no_match = "No match";
+static const char *meta_characters      = "|.^$*+?()[\\";
+static const char *message_match        = "Match";
+static const char *error_no_match       = "No match";
+static const char *error_jump_offset    = "Jump offset is too big" ;
+static const char *error_code_too_long  = "RE is too long (code overflow)";
+static const char *error_data_too_long  = "RE is too long (data overflow)";
+static const char *error_text_too_long  = "RE is too long (text overflow)";
+static const char *error_no_paren       = "No closing parenthesis";
+static const char *error_bad_paren      = "Unbalanced parenthesis";
+static const char *error_no_bracket     = "No closing ']' bracket";
+static const char *error_too_many_paren = "Too many parenthesis";
+static const char *error_int_failed     = "SLRE_INT: capture failed";
+static const char *error_int_size       = "SLRE_INT: unsupported size";
+static const char *error_float_size     = "SLRE_FLOAT: unsupported size";
+static const char *error_float_failed   = "SLRE_FLOAT: capture failed";
+static const char *error_string_size    = "SLRE_STRING: buffer size too small";
+static const char *error_unknown_type   =  
+      "Unknown type, expected SLRE_(INT|FLOAT|STRING|CALLBACK|CAPTURED)";
+static const char *error_null_captured  =  "SLRE_CAPTURED: null captured struct";
+
+
+/* Converts an SLRE error code to a string. Returns NULL if unknown error is used. */
+const char * slre_error(int code) { 
+  switch(code) { 
+    case SLRE_OK                     : return message_match;
+    case SLRE_ERROR_NO_MATCH            : return error_no_match;
+    case SLRE_ERROR_BAD_PAREN           : return error_bad_paren;
+    case SLRE_ERROR_CODE_TOO_LONG       : return error_code_too_long;
+    case SLRE_ERROR_DATA_TOO_LONG       : return error_data_too_long;
+    case SLRE_ERROR_TEXT_TOO_LONG       : return error_text_too_long;
+    case SLRE_ERROR_FLOAT_FAILED        : return error_float_failed;
+    case SLRE_ERROR_FLOAT_SIZE          : return error_float_size;
+    case SLRE_ERROR_INT_FAILED          : return error_int_failed;
+    case SLRE_ERROR_INT_SIZE            : return error_int_size;
+    case SLRE_ERROR_JUMP_OFFSET         : return error_jump_offset;
+    case SLRE_ERROR_NO_BRACKET          : return error_no_bracket;
+    case SLRE_ERROR_NO_PAREN            : return error_no_paren;
+    case SLRE_ERROR_STRING_SIZE         : return error_string_size;
+    case SLRE_ERROR_TOO_MANY_PAREN      : return error_too_many_paren;
+    case SLRE_ERROR_UNKNOWN_TYPE        : return error_unknown_type;
+    case SLRE_ERROR_NULL_CAPTURED       : return error_null_captured;
+    default                             : return NULL;
+  }
+}
+
+
+/*     
+
+*/
 
 static void set_jump_offset(struct slre *r, int pc, int offset) {
   assert(offset < r->code_size);
   if (r->code_size - offset > 0xff) {
-    r->error_string = "Jump offset is too big";
+    r->error = SLRE_ERROR_JUMP_OFFSET;
   } else {
     r->code[pc] = (unsigned char) (r->code_size - offset);
   }
@@ -102,7 +146,7 @@ static void set_jump_offset(struct slre *r, int pc, int offset) {
 
 static void emit(struct slre *r, int code) {
   if (r->code_size >= (int) (sizeof(r->code) / sizeof(r->code[0]))) {
-    r->error_string = "RE is too long (code overflow)";
+    r->error = SLRE_ERROR_CODE_TOO_LONG;
   } else {
     r->code[r->code_size++] = (unsigned char) code;
   }
@@ -110,7 +154,7 @@ static void emit(struct slre *r, int code) {
 
 static void store_char_in_data(struct slre *r, int ch) {
   if (r->data_size >= (int) sizeof(r->data)) {
-    r->error_string = "RE is too long (data overflow)";
+    r->error = SLRE_ERROR_DATA_TOO_LONG;
   } else {
     r->data[r->data_size++] = ch;
   }
@@ -144,8 +188,8 @@ static int get_escape_char(const char **re) {
     case 'X':  res = NONXDIGIT  << 8;  break;
     case 'a':  res = ALPHA      << 8;  break;
     case 'A':  res = NONALPHA   << 8;  break;
-    case 'l':  res = ALNUM      << 8;  break;
-    case 'L':  res = NONALNUM   << 8;  break;
+    case 'w':  res = ALNUM      << 8;  break;
+    case 'W':  res = NONALNUM   << 8;  break;
     case 'b':  res = BLANK      << 8;  break;
     case 'B':  res = NONBLANK   << 8;  break;
     default:  res = (*re)[-1];  break;
@@ -186,7 +230,7 @@ static void anyof(struct slre *r, const char **re) {
         break;
     }
 
-  r->error_string = "No closing ']' bracket";
+  r->error = SLRE_ERROR_NO_BRACKET; 
 }
 
 static void relocate(struct slre *r, int begin, int shift) {
@@ -274,7 +318,7 @@ static void compile(struct slre *r, const char **re) {
 
         compile(r, re);
         if (*(*re)++ != ')') {
-          r->error_string = "No closing bracket";
+          r->error = SLRE_ERROR_NO_PAREN;
           return;
         }
 
@@ -286,7 +330,7 @@ static void compile(struct slre *r, const char **re) {
         (*re)--;
         fixup_branch(r, fixup);
         if (level == 0) {
-          r->error_string = "Unbalanced brackets";
+          r->error = SLRE_ERROR_BAD_PAREN;
           return;
         }
         return;
@@ -326,8 +370,8 @@ static void compile(struct slre *r, const char **re) {
 
 // Compile regular expression. If success, 1 is returned.
 // If error, 0 is returned and slre.error_string points to the error message.
-static const char *compile2(struct slre *r, const char *re) {
-  r->error_string = NULL;
+static int compile2(struct slre *r, const char *re) {
+  r->error = 0;
   r->code_size = r->data_size = r->num_caps = r->anchored = 0;
 
   if (*re == '^') {
@@ -354,11 +398,11 @@ static const char *compile2(struct slre *r, const char *re) {
   dump(r, stdout);
 #endif
 
-  return r->error_string;
+  return r->error;
 }
 
-static const char *match(const struct slre *, int, const char *, int, int *,
-                         struct cap *, int caps_size);
+static int match(const struct slre *, int, const char *, int, int *,
+                         struct slre_captured *, int caps_size);
 
 static void loop_greedy(const struct slre *r, int pc, const char *s, int len,
                         int *ofs) {
@@ -436,33 +480,33 @@ static int casecmp(const void *p1, const void *p2, size_t len) {
 }
 
 
-/* Macro to easily implement cases */
+/* Macro to easily implement match cases */
 #define MATCH_WITH_FUNCTION(FUNC)                                       \
-        error_string = error_no_match;                                  \
+        error = SLRE_ERROR_NO_MATCH;                                    \
         if (*ofs < len && FUNC(((unsigned char *)s)[*ofs])) {           \
           (*ofs)++;                                                     \
-          error_string = NULL;                                          \
+          error = SLRE_OK;                                              \
         }                                                               \
         pc++;                                                           \
 
-        /* Macro to easily implement cases */
+/* Macro to easily implement negative match cases */
 #define MATCH_WITH_NEGATE_FUNCTION(FUNC)                                \
-        error_string = error_no_match;                                  \
+        error = SLRE_ERROR_NO_MATCH;                                    \
         if (*ofs < len && (!(FUNC(((unsigned char *)s)[*ofs])))) {      \
           (*ofs)++;                                                     \
-          error_string = NULL;                                          \
+          error = SLRE_OK;                                              \
         }                                                               \
         pc++;                                                           \
 
 
 
-static const char *match(const struct slre *r, int pc, const char *s, int len,
-                         int *ofs, struct cap *caps, int caps_size) {
+static int match(const struct slre *r, int pc, const char *s, int len,
+                         int *ofs, struct slre_captured *caps, int caps_size) {
   int n, saved_offset;
-  const char *error_string = NULL;
+  int error = SLRE_OK;
   int (*cmp)(const void *string1, const void *string2, size_t len);
 
-  while (error_string == NULL && r->code[pc] != END) {
+  while (error == SLRE_OK && r->code[pc] != END) {
 
     assert(pc < r->code_size);
     assert(pc < (int) (sizeof(r->code) / sizeof(r->code[0])));
@@ -470,50 +514,50 @@ static const char *match(const struct slre *r, int pc, const char *s, int len,
     switch (r->code[pc]) {
       case BRANCH:
         saved_offset = *ofs;
-        error_string = match(r, pc + 3, s, len, ofs, caps, caps_size);
-        if (error_string != NULL) {
+        error = match(r, pc + 3, s, len, ofs, caps, caps_size);
+        if (error != SLRE_OK) {
           *ofs = saved_offset;
-          error_string = match(r, pc + r->code[pc + 1], s, len, ofs, caps,
+          error = match(r, pc + r->code[pc + 1], s, len, ofs, caps,
                                caps_size);
         }
         pc += r->code[pc + 2];
         break;
 
       case EXACT:
-        error_string = error_no_match;
+        error = SLRE_ERROR_NO_MATCH;
         n = r->code[pc + 2];  // String length
         cmp = r->options & SLRE_CASE_INSENSITIVE ? casecmp : memcmp;
         if (n <= len - *ofs && !cmp(s + *ofs, r->data + r->code[pc + 1], n)) {
           (*ofs) += n;
-          error_string = NULL;
+          error = SLRE_OK;
         }
         pc += 3;
         break;
 
-      case QUEST:
-        error_string = NULL;
+      case QUEST:        
+        error = SLRE_OK;
         saved_offset = *ofs;
-        if (match(r, pc + 2, s, len, ofs, caps, caps_size) != NULL) {
+        if (match(r, pc + 2, s, len, ofs, caps, caps_size) != SLRE_OK) {
           *ofs = saved_offset;
         }
         pc += r->code[pc + 1];
         break;
 
       case STAR:
-        error_string = NULL;
+        error = SLRE_OK;
         loop_greedy(r, pc, s, len, ofs);
         pc += r->code[pc + 1];
         break;
 
       case STARQ:
-        error_string = NULL;
+        error = SLRE_OK;
         loop_non_greedy(r, pc, s, len, ofs);
         pc += r->code[pc + 1];
         break;
 
       case PLUS:
-        if ((error_string = match(r, pc + 2, s, len, ofs,
-                                  caps, caps_size)) != NULL) {
+        if ((error = match(r, pc + 2, s, len, ofs,
+                                  caps, caps_size)) != SLRE_OK) {
           break;
         }
         loop_greedy(r, pc, s, len, ofs);
@@ -521,40 +565,25 @@ static const char *match(const struct slre *r, int pc, const char *s, int len,
         break;
 
       case PLUSQ:
-        if ((error_string = match(r, pc + 2, s, len, ofs,
-                                  caps, caps_size)) != NULL) {
+        if ((error = match(r, pc + 2, s, len, ofs,
+                                  caps, caps_size)) != SLRE_OK) {
           break;
         }
         loop_non_greedy(r, pc, s, len, ofs);
         pc += r->code[pc + 1];
         break;
-
+        
       case SPACE:
-        error_string = error_no_match;
-        if (*ofs < len && isspace(((unsigned char *)s)[*ofs])) {
-          (*ofs)++;
-          error_string = NULL;
-        }
-        pc++;
-        break;
+        MATCH_WITH_FUNCTION(isspace)
+        break; 
 
       case NONSPACE:
-        error_string = error_no_match;
-        if (*ofs <len && !isspace(((unsigned char *)s)[*ofs])) {
-          (*ofs)++;
-          error_string = NULL;
-        }
-        pc++;
-        break;
-
+        MATCH_WITH_NEGATE_FUNCTION(isspace)
+        break; 
+        
       case DIGIT:
-        error_string = error_no_match;
-        if (*ofs < len && isdigit(((unsigned char *)s)[*ofs])) {
-          (*ofs)++;
-          error_string = NULL;
-        }
-        pc++;
-        break;
+        MATCH_WITH_FUNCTION(isdigit)
+        break; 
         
       case NONDIGIT:
         MATCH_WITH_NEGATE_FUNCTION(isdigit)
@@ -593,44 +622,44 @@ static const char *match(const struct slre *r, int pc, const char *s, int len,
         break;
 
       case ANY:
-        error_string = error_no_match;
+        error = SLRE_ERROR_NO_MATCH;
         if (*ofs < len) {
           (*ofs)++;
-          error_string = NULL;
+          error = SLRE_OK;
         }
         pc++;
         break;
 
       case ANYOF:
-        error_string = error_no_match;
+        error = SLRE_ERROR_NO_MATCH;
         if (*ofs < len)
-          error_string = is_any_of(r->data + r->code[pc + 1], r->code[pc + 2],
-                                   s, ofs) ? NULL : error_no_match;
+          error = is_any_of(r->data + r->code[pc + 1], r->code[pc + 2],
+                                   s, ofs) ? SLRE_OK : SLRE_ERROR_NO_MATCH ;
         pc += 3;
         break;
 
       case ANYBUT:
-        error_string = error_no_match;
+        error = SLRE_ERROR_NO_MATCH;
         if (*ofs < len)
-          error_string = is_any_but(r->data + r->code[pc + 1], r->code[pc + 2],
-                                    s, ofs) ? NULL : error_no_match;
+          error = is_any_but(r->data + r->code[pc + 1], r->code[pc + 2],
+                                    s, ofs) ? SLRE_OK : SLRE_ERROR_NO_MATCH ;
         pc += 3;
         break;
 
       case BOL:
-        error_string = *ofs == 0 ? NULL : error_no_match;
+        error = *ofs == 0 ? SLRE_OK : SLRE_ERROR_NO_MATCH; 
         pc++;
         break;
 
       case EOL:
-        error_string = *ofs == len ? NULL : error_no_match;
+        error = *ofs == len ? SLRE_OK : SLRE_ERROR_NO_MATCH;
         pc++;
         break;
 
       case OPEN:
         if (caps != NULL) {
           if (caps_size - 2 < r->code[pc + 1]) {
-            error_string = "Too many brackets";
+            error = SLRE_ERROR_TOO_MANY_PAREN;
           } else {
             caps[r->code[pc + 1]].ptr = s + *ofs;
           }
@@ -659,7 +688,7 @@ static const char *match(const struct slre *r, int pc, const char *s, int len,
     }
   }
 
-  return error_string;
+  return error;
 }
 
 // Return 1 if match, 0 if no match.
@@ -670,51 +699,51 @@ static const char *match(const struct slre *r, int pc, const char *s, int len,
 // It is assumed that the size of captured_substrings array is enough to
 // hold all captures. The caller function must make sure it is! So, the
 // array_size = number_of_round_bracket_pairs + 1
-static const char *match2(const struct slre *r, const char *buf, int len,
-                          struct cap *caps, int caps_size) {
+static int match2(const struct slre *r, const char *buf, int len,
+                          struct slre_captured *caps, int caps_size) {
   int  i, ofs = 0;
-  const char *error_string = error_no_match;
+  int error   = SLRE_ERROR_NO_MATCH;
 
   if (caps != NULL) {
     memset(caps, 0, caps_size * sizeof(caps[0]));
   }
 
   if (r->anchored) {
-    error_string = match(r, 0, buf, len, &ofs, caps, caps_size);
+    error = match(r, 0, buf, len, &ofs, caps, caps_size);
   } else {
-    for (i = 0; i < len && error_string != NULL; i++) {
+    for (i = 0; i < len && error != SLRE_OK; i++) {
       ofs = i;
-      error_string = match(r, 0, buf, len, &ofs, caps, caps_size);
+      error = match(r, 0, buf, len, &ofs, caps, caps_size);
     }
   }
 
-  return error_string;
+  return error;
 }
 
-static const char *capture_float(const struct cap *cap, void *p, size_t len) {
+static int capture_float(const struct slre_captured *cap, void *p, size_t len) {
   const char *fmt;
   char buf[20];
 
   switch (len) {
     case sizeof(float): fmt = "f"; break;
     case sizeof(double): fmt = "lf"; break;
-    default: return "SLRE_FLOAT: unsupported size";
+    default: return SLRE_ERROR_FLOAT_SIZE;
   }
 
   snprintf(buf, sizeof(buf), "%%%d%s", cap->len, fmt);
-  return sscanf(cap->ptr, buf, p) == 1 ? NULL : "SLRE_FLOAT: capture failed";
+  return sscanf(cap->ptr, buf, p) == 1 ? SLRE_OK : SLRE_ERROR_FLOAT_FAILED;
 }
 
-static const char *capture_string(const struct cap *cap, void *p, size_t len) {
+static int capture_string(const struct slre_captured *cap, void *p, size_t len) {
   if ((int) len <= cap->len) {
-    return "SLRE_STRING: buffer size too small";
+    return SLRE_ERROR_STRING_SIZE;
   }
   memcpy(p, cap->ptr, cap->len);
   ((char *) p)[cap->len] = '\0';
-  return NULL;
+  return SLRE_OK;
 }
 
-static const char *capture_int(const struct cap *cap, void *p, size_t len) {
+static int capture_int(const struct slre_captured *cap, void *p, size_t len) {
   const char *fmt;
   char buf[20];
 
@@ -723,33 +752,46 @@ static const char *capture_int(const struct cap *cap, void *p, size_t len) {
     case sizeof(short): fmt = "h"; break;
     case sizeof(int): fmt = "d"; break;
     case sizeof(long long int): fmt = "lld"; break;
-    default: return "SLRE_INT: unsupported size";
+    default: return SLRE_ERROR_INT_SIZE;
   }
 
   snprintf(buf, sizeof(buf), "%%%d%s", cap->len, fmt);
-  return sscanf(cap->ptr, buf, p) == 1 ? NULL : "SLRE_INT: capture failed";
+  return sscanf(cap->ptr, buf, p) == 1 ?  SLRE_OK : SLRE_ERROR_INT_FAILED;
 }
 
-static const char *capture_callback(const struct cap *cap, int i, slre_callback *fp, void * extra) {
+static int capture_callback(const struct slre_captured *cap, int i, slre_callback *fp, void * extra) {
   return fp(i, cap->ptr, cap->len, extra);
 }
 
+static int capture_captured(const struct slre_captured *cap, struct slre_captured *target) {
+  if(!target) return SLRE_ERROR_NULL_CAPTURED;
+  (*target) = (*cap);
+  return 0;
+}
 
-static const char *capture(const struct cap *caps, int num_caps, va_list ap) {
+
+static int capture(const struct slre_captured *caps, int num_caps, va_list ap) {
   int i, type;
   size_t size                 = 0;
   void             *p         = NULL;
-  const char     *err         = NULL;
+  int             err         = SLRE_OK;
   int             callback_ok = 0;  
   slre_callback * fp          = NULL;
 
   for (i = 0; i < num_caps; i++) {
     /* Callback needs slightly different arguments, only taken once. */
     if (!callback_ok) { 
-      type = va_arg(ap, int);    
-      if ((type == SLRE_CALLBACK)) { 
+      type = va_arg(ap, int); 
+      // stop processing captures if the type SLRE_IGNORE is seen. 
+      if (type == SLRE_IGNORE) {
+        return err;
+      }
+      
+      if (type == SLRE_CALLBACK) { 
         callback_ok = !callback_ok;
         fp   = va_arg(ap, slre_callback*);
+        p    = va_arg(ap, void *);
+      } else if (type == SLRE_CAPTURED) {  
         p    = va_arg(ap, void *);
       } else {
         size = va_arg(ap, size_t);
@@ -762,29 +804,33 @@ static const char *capture(const struct cap *caps, int num_caps, va_list ap) {
       case SLRE_FLOAT   : err = capture_float(&caps[i], p, size); break;
       case SLRE_STRING  : err = capture_string(&caps[i], p, size); break;
       case SLRE_CALLBACK: err = capture_callback(&caps[i], i, fp, p); break;
-      default: err = "Unknown type, expected SLRE_(INT|FLOAT|STRING|CALLBACK)"; break;
+      case SLRE_CAPTURED: err = capture_captured(&caps[i], p); break;
+      default: err = SLRE_ERROR_UNKNOWN_TYPE; break;
     }
   }
   return err;
 }
 
-const char *slre_match(enum slre_option options, const char *re,
+int slre_match(enum slre_option options, const char *re,
                        const char *buf, int buf_len, ...) {
   struct slre slre;
-  struct cap caps[20];
+  struct slre_captured caps[SLRE_CAPURES_MAX];
   va_list ap;
-  const char *error_string = NULL;
+  int error = SLRE_OK;
 
   slre.options = options;
-  if ((error_string = compile2(&slre, re)) == NULL &&
-      (error_string = match2(&slre, buf, buf_len, caps,
-                             sizeof(caps) / sizeof(caps[0]))) == NULL) {
-    va_start(ap, buf_len);
-    error_string = capture(caps + 1, slre.num_caps, ap);
-    va_end(ap);
-  }
-
-  return error_string;
+  error = compile2(&slre, re);
+  if(error != SLRE_OK)           { return error; } 
+  error = match2(&slre, buf, buf_len, caps, sizeof(caps) / sizeof(caps[0]));
+  if(error != SLRE_OK)           { return error; } 
+  /* Don't capture if not requested. */
+  if (options & SLRE_NO_CAPTURE) { return error; }
+  
+  va_start(ap, buf_len);
+  error = capture(caps + 1, slre.num_caps, ap);
+  va_end(ap);
+  
+  return error;
 }
 
 #if defined(SLRE_UNIT_TEST)
@@ -937,7 +983,7 @@ int main(void) {
 
   {
     struct slre slre;
-    struct cap caps[10];
+    struct slre_captured caps[10];
     char a[10], b[10];
 
     memset(caps, 'x', sizeof(caps));

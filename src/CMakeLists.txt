@@ -1,10 +1,15 @@
 
 set (RAKU_SRC
-  brobject.c
+  bstrlib.c
+  bstraux.c
+  slre.c
+  raparser.c
+  raku.c
+  main.c
 )
-add_library(libraku SHARED ${RAKU_SRC})
-target_link_libraries(libraku ${LIBS})
+add_library(rakulib SHARED ${RAKU_SRC})
+target_link_libraries(rakulib ${LIBS})
 add_executable(raku ${RAKU_SRC} main.c)
-target_link_libraries(raku libraku ${LIBS})
+target_link_libraries(raku rakulib ${LIBS})
 
 

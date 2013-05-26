@@ -1,6 +1,8 @@
 // Copyright (c) 2004-2012 Sergey Lyubka <valenok@gmail.com>
 // All rights reserved
 //
+// Enhanced and modified by beoran@gmail.com, 2013.
+//
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
 // in the Software without restriction, including without limitation the rights
@@ -34,6 +36,16 @@
 //    \s       Match whitespace
 //    \S       Match non-whitespace
 //    \d       Match decimal digit
+//    \D       Match anything but a decimal digit
+//    \a       Match alphabetical character
+//    \A       Match anything but an alphabetical character
+//    \w       Match alphanumerical character
+//    \W       Match anything but an alphanumerical character
+//    \b       Match a blank character, i.e. space or tab
+//    \B       Match anything but a blank character
+//    \x       Match a hexadecimal digit
+//    \X       Match anything but a hexadecimal digit
+//    \t       Match a tab
 //    \r       Match carriage return
 //    \n       Match newline
 //    +        Match one or more times (greedy)
@@ -76,19 +88,71 @@
 //
 // If SLRE_CALLBACK is passed as the first variable arument, then the 2 next 
 // arguments must be a function pointer of the type * slre_callback, and a void *
-// that optionally points to extra data. The callback will be called. 
+// that points to extra data or to NULL. The callback will be called once 
 // for every match.
+//
+// If SLRE_CAPTURED is passed, addresses to slre_captured structs must be passed 
+// for storage of the results.
+// 
+// If SLRE_IGNORE is passed, then all further captures are ignored.
 //
 // Return:
 //   NULL: string matched and all captures successfully made
 //   non-NULL: in this case, the return value is an error string
 
-enum slre_option { SLRE_CASE_INSENSITIVE = 1, SLRE_NO_CAPTURE = 2 };
-enum slre_capture {SLRE_STRING, SLRE_INT, SLRE_FLOAT, SLRE_CALLBACK};
-/* Callback type to use for SLRE_CALLBACK. */
-typedef const char * slre_callback(int index, const char * capture, int size, void * data);
+/* Match options. */
+enum slre_option { 
+  SLRE_CASE_INSENSITIVE = 1, SLRE_NO_CAPTURE = 2
+};
 
-const char *slre_match(enum slre_option options, const char *regexp,
+/* Possible capture types. */
+enum slre_capture { 
+   SLRE_STRING, SLRE_INT, SLRE_FLOAT, SLRE_CALLBACK, SLRE_CAPTURED, SLRE_IGNORE
+};
+
+/* Captured substring */
+struct slre_captured {
+  const char *ptr;  // Pointer to the substring
+  int len;          // Substring length
+};
+
+
+/* Possible results of slre_match. */
+enum slre_result {
+  SLRE_OK                       = 0,
+  SLRE_ERROR_NO_MATCH           = 1,      
+  SLRE_ERROR_JUMP_OFFSET        = 2,
+  SLRE_ERROR_CODE_TOO_LONG      = 3,     
+  SLRE_ERROR_DATA_TOO_LONG      = 4,
+  SLRE_ERROR_NO_PAREN           = 5,      
+  SLRE_ERROR_BAD_PAREN          = 6,     
+  SLRE_ERROR_NO_BRACKET         = 7,    
+  SLRE_ERROR_TOO_MANY_PAREN     = 8,
+  SLRE_ERROR_INT_FAILED         = 9,  
+  SLRE_ERROR_INT_SIZE           = 10,    
+  SLRE_ERROR_FLOAT_SIZE         = 11,  
+  SLRE_ERROR_FLOAT_FAILED       = 12,
+  SLRE_ERROR_STRING_SIZE        = 13, 
+  SLRE_ERROR_UNKNOWN_TYPE       = 14,
+  SLRE_ERROR_TEXT_TOO_LONG      = 15,    
+  SLRE_ERROR_NULL_CAPTURED      = 16,
+  SLRE_ERROR_LAST               = 225,
+};
+
+/* Maximum amount of captures. */
+#ifndef SLRE_CAPURES_MAX
+#define SLRE_CAPURES_MAX 64
+#endif
+
+
+/* Callback type to use for SLRE_CALLBACK. */
+typedef int slre_callback(int index, const char * capture, int size, void * data);
+
+/* Matching function. */
+int slre_match(enum slre_option options, const char *regexp,
                        const char *buf, int buf_len, ...);
+
+/* Converts error code to string or NULL if not known. */
+const char * slre_error(int code);
 
 #endif /* SLRE_HEADER_DEFINED */
